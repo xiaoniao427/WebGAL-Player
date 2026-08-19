@@ -44,6 +44,12 @@ func load_texture(file_name: String, type_name := "background") -> Texture2D:
 	if file_name == "" or file_name == "none":
 		return null
 	var p := resolve(file_name, type_name)
+	# ponytail: res:// 路径优先用 ResourceLoader（导出后 pck 内可用），
+	# 非 res:// 路径或未导入的 res:// 资源走 Image.load_from_file fallback
+	if p.begins_with("res://"):
+		var tex := ResourceLoader.load(p, "Texture2D", ResourceLoader.CACHE_MODE_REUSE)
+		if tex:
+			return tex
 	var img := Image.load_from_file(p)
 	if img == null:
 		push_warning("WebGAL: 无法加载图片 " + p)

@@ -10,6 +10,7 @@ extends Node
 
 const SAVE_DIR := "user://webgal_saves/"
 const MAX_SLOTS := 9
+const DESIGN_SIZE := Vector2(1920, 1080)  # WebGAL 设计分辨率
 
 enum State { TITLE, RUNNING, WAITING_INPUT, WAITING_TIMER, CHOOSING, ENDED }
 enum Speed { NORMAL = 1, DOUBLE = 2, TRIPLE = 3 }
@@ -69,6 +70,20 @@ var _sl_grid: GridContainer
 var _sl_btn_close: Button
 var _sl_slots: Array = []
 
+# 输入框节点
+var _input_dialog: Control
+var _input_field: LineEdit
+var _input_btn: Button
+var _input_varname: String = ""
+
+# Pixi 特效层
+var _pixi_layer: ColorRect
+
+# 窗口缩放比例（设计分辨率 → 实际窗口）
+var _scale_factor: Vector2 = Vector2.ONE
+# 章节转场黑色幕布（最顶层，点击消失）
+var _curtain: ColorRect
+
 
 signal game_ended
 signal dialog_shown(speaker: String, text: String)
@@ -104,6 +119,8 @@ func _ready() -> void:
 	# ponytail: Android 触摸默认已启用，无需额外设置
 
 	_build_ui()
+	# ponytail: 计算窗口缩放比例（设计分辨率 → 实际窗口）
+	_scale_factor = get_viewport().get_visible_rect().size / DESIGN_SIZE
 	# Godot canvas_items 原生缩放，无需手动
 	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)  # 原生全屏
 	_show_title()
@@ -319,9 +336,28 @@ func _execute(s: Dictionary) -> int:
 			_set_animation(content, args)
 			return _advance_flag(args)
 		WebgalModels.Cmd.GET_USER_INPUT:
-			_input_default(content, args)
+			_show_input(content, args)
+			return 0
+		WebgalModels.Cmd.PIXI:
+			_pixi_effect(content, args)
 			return 1
-		WebgalModels.Cmd.MINI_AVATAR, WebgalModels.Cmd.FILM_MODE, WebgalModels.Cmd.SET_TEXTBOX, WebgalModels.Cmd.UNLOCK_CG, WebgalModels.Cmd.UNLOCK_BGM, WebgalModels.Cmd.CALL_STEAM, WebgalModels.Cmd.PIXI, WebgalModels.Cmd.PIXI_INIT, WebgalModels.Cmd.APPLY_STYLE, WebgalModels.Cmd.SET_TRANSITION, WebgalModels.Cmd.SET_TEMP_ANIMATION, WebgalModels.Cmd.COMMENT, WebgalModels.Cmd.SHOW_VARS, WebgalModels.Cmd.VIDEO, WebgalModels.Cmd.DUMMY:
+		WebgalModels.Cmd.PIXI_INIT:
+			_pixi_init(content, args)
+			return 1
+		WebgalModels.Cmd.SET_TEXTBOX:
+			_set_textbox(content, args)
+			return 1
+		WebgalModels.Cmd.UNLOCK_CG:
+			_unlock_cg(content, args)
+			return 1
+		WebgalModels.Cmd.UNLOCK_BGM:
+			_unlock_bgm(content, args)
+			return 1
+		WebgalModels.Cmd.SET_TRANSITION:
+			# ponytail: setTransition 同 setTransform，仅别名
+			_set_transform(content, args)
+			return _advance_flag(args)
+		WebgalModels.Cmd.MINI_AVATAR, WebgalModels.Cmd.FILM_MODE, WebgalModels.Cmd.CALL_STEAM, WebgalModels.Cmd.APPLY_STYLE, WebgalModels.Cmd.SET_TEMP_ANIMATION, WebgalModels.Cmd.COMMENT, WebgalModels.Cmd.SHOW_VARS, WebgalModels.Cmd.VIDEO, WebgalModels.Cmd.DUMMY:
 			# ponytail: 未实现功能 — 跳过不崩溃
 			return 1
 		_:
@@ -346,6 +382,16 @@ func _do_say(s: Dictionary, content: String, args: Array) -> int:
 
 func _set_bg(file: String, args: Array) -> void:
 	_bg_path = file
+	# ponytail: 每次换背景先重置 _bg 为全屏（清除之前 transform 残留的 scale/position）
+	_bg.position = Vector2.ZERO
+	_bg.scale = Vector2.ONE
+	_bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_bg.offset_left = 0
+	_bg.offset_top = 0
+	_bg.offset_right = 0
+	_bg.offset_bottom = 0
+	_bg.modulate.a = 1.0
+	_bg.rotation = 0.0
 	if file == "" or file == "none":
 		_bg.texture = null
 		_bg.visible = false
@@ -354,9 +400,10 @@ func _set_bg(file: String, args: Array) -> void:
 	if tex:
 		_bg.texture = tex
 		_bg.visible = true
+		# ponytail: 背景已是全屏铺满，transform 只取 alpha/rotation，忽略 position/scale
 		var t: Variant = _get_arg(args, "transform")
 		if t != null:
-			_apply_transform_to_node(_bg, t)
+			_apply_bg_transform(t)
 
 
 func _set_figure(file: String, args: Array) -> void:
@@ -408,6 +455,28 @@ func _play_bgm(file: String, args: Array) -> void:
 func _stop_bgm() -> void:
 	if has_node("BGMPlayer"):
 		(get_node("BGMPlayer") as AudioStreamPlayer).stop()
+
+
+func _set_textbox(content: String, args: Array) -> void:
+	# ponytail: setTextbox:hide → 隐藏对话框；setTextbox:on → 显示
+	_dialog.visible = (content.strip_edges().to_lower() == "on")
+
+
+func _unlock_cg(content: String, args: Array) -> void:
+	# ponytail: unlockCg 仅日志记录，无实际图鉴系统
+	if content == "":
+		return
+	var name := String(_get_arg(args, "name", ""))
+	if name == "":
+		name = content.get_file()
+	print("WebGAL[图鉴]: CG解锁 - ", name, " (", content, ")")
+
+
+func _unlock_bgm(content: String, args: Array) -> void:
+	# ponytail: unlockBgm 仅日志记录，无实际图鉴系统
+	if content == "":
+		return
+	print("WebGAL[图鉴]: BGM解锁 - ", content.get_file(), " (", content, ")")
 
 
 func _show_intro(content: String) -> void:
@@ -520,19 +589,62 @@ func _input_default(varname: String, args: Array) -> void:
 		vars.set_var(varname, default_val)
 
 
+func _show_input(varname: String, args: Array) -> void:
+	_input_varname = varname
+	var default_val := ""
+	var placeholder := "请输入..."
+	for a in args:
+		var k := str(a.get("key", ""))
+		if k == "defaultValue":
+			default_val = str(a.get("value", ""))
+		if k == "placeholder":
+			placeholder = str(a.get("value", ""))
+	_input_field.text = default_val
+	_input_field.placeholder_text = placeholder
+	_input_dialog.visible = true
+	_input_field.grab_focus()
+	_state = State.WAITING_INPUT
+
+
 func _set_transform(content: String, args: Array) -> void:
 	var target_id: String = _get_arg(args, "target", "center")
-	var node = _get_figure_node(target_id)
+	# ponytail: setTransform 的 target 可以是 figure 节点或任意标识（如 black/white/校园等黑幕/场景名）
+	# 先查现有 figure，找不到则创建临时透明节点（黑幕/白幕/场景名等）
+	var node: Control = _get_figure_node(target_id)
 	if node == null:
+		# ponytail: black/white → 使用专用 _curtain 层（最顶层，可点击）
+		if target_id == "black" or target_id == "white":
+			_curtain.color = Color.BLACK if target_id == "black" else Color.WHITE
+			_curtain.modulate.a = 0.0
+			_curtain.visible = true
+			_apply_transform_tween(_curtain, content, float(_get_arg(args, "duration", 0)) / 1000.0)
+			return
+		# ponytail: 非 figure 目标 → 创建临时全屏透明节点
+		var tr := TextureRect.new()
+		tr.name = target_id
+		tr.set_anchors_preset(Control.PRESET_FULL_RECT)
+		tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		tr.modulate.a = 0.0
+		_figure_container.add_child(tr)
+		_figures[target_id] = tr
+		node = tr
+	# ponytail: setTransform 的 JSON 在 content 中（如 setTransform:{"alpha":1} -target=black）
+	# content 为空时查 -transform 参数（changeFigure/changeBg 用）
+	# 两者皆空直接 return，不创建空 Tween
+	var transform_str := content.strip_edges()
+	if transform_str == "":
+		transform_str = str(_get_arg(args, "transform", ""))
+	if transform_str == "":
 		return
-	# ponytail: content 为空时回退到 args 中的 transform 参数
-	if content == "":
-		content = str(_get_arg(args, "transform", ""))
+	# ponytail: 非 JSON 格式（如 setTransform: alpha=1）→ 跳过不崩溃
+	if not transform_str.begins_with("{"):
+		push_warning("WebGAL: setTransform 非 JSON 格式，跳过: " + transform_str)
+		return
 	var duration := float(_get_arg(args, "duration", 0)) / 1000.0
 	if _current_tween:
 		_current_tween.kill()
 	_current_tween = create_tween()
-	_apply_transform_tween(node, content, duration)
+	_apply_transform_tween(node, transform_str, duration)
 
 
 func _set_animation(content: String, args: Array) -> void:
@@ -554,9 +666,16 @@ func _set_animation(content: String, args: Array) -> void:
 	if _current_tween:
 		_current_tween.kill()
 	_current_tween = create_tween()
+	# ponytail: 逐帧关键帧插值，每帧可独立指定 easing
 	for frame in frames:
 		var dur := float(frame.get("duration", 0)) / 1000.0
-		_apply_transform_tween(node, JSON.stringify(frame), dur)
+		if dur <= 0.0:
+			_apply_transform_to_node(node, frame)
+			continue
+		var easing := String(frame.get("easing", "linear"))
+		var tween_type := _tween_easing(easing)
+		var t := _current_tween.parallel()
+		_apply_transform_tween_to(node, t, frame, dur, tween_type)
 
 
 func _play_effect(file: String) -> void:
@@ -638,8 +757,8 @@ func _apply_transform_to_node(node: Control, json_data) -> void:
 	if t.has("position"):
 		var pos = t["position"]
 		if typeof(pos) == TYPE_DICTIONARY:
-			var x := float(pos.get("x", 0))
-			var y := float(pos.get("y", 0))
+			var x := float(pos.get("x", 0)) * _scale_factor.x
+			var y := float(pos.get("y", 0)) * _scale_factor.y
 			node.position = Vector2(x, y)
 	if t.has("scale"):
 		var s = t["scale"]
@@ -651,6 +770,22 @@ func _apply_transform_to_node(node: Control, json_data) -> void:
 		node.modulate.a = float(t["alpha"])
 	if t.has("rotation"):
 		node.rotation = deg_to_rad(float(t["rotation"]))
+
+
+## ponytail: 背景专用 transform — 全屏铺满，只取 alpha/rotation，忽略 position/scale
+func _apply_bg_transform(json_data) -> void:
+	var t: Dictionary
+	if typeof(json_data) == TYPE_STRING:
+		var p := JSON.parse_string(json_data)
+		if p == null:
+			return
+		t = p
+	else:
+		t = json_data
+	if t.has("alpha"):
+		_bg.modulate.a = float(t["alpha"])
+	if t.has("rotation"):
+		_bg.rotation = deg_to_rad(float(t["rotation"]))
 
 
 func _apply_transform_tween(node: Control, json_data, duration: float) -> void:
@@ -673,22 +808,112 @@ func _apply_transform_tween(node: Control, json_data, duration: float) -> void:
 	if duration <= 0.0:
 		_apply_transform_to_node(node, t)
 		return
+	_apply_transform_tween_to(node, _current_tween, t, duration, Tween.EASE_IN_OUT)
+
+
+## 在指定 Tween 上应用一帧变换，支持 easing
+func _apply_transform_tween_to(node: Control, tween: Tween, t: Dictionary, duration: float, ease_type: int) -> void:
 	if t.has("position"):
 		var pos = t["position"]
 		if typeof(pos) == TYPE_DICTIONARY:
-			var x := float(pos.get("x", 0))
-			var y := float(pos.get("y", 0))
-			_current_tween.tween_property(node, "position", Vector2(x, y), duration)
+			var x := float(pos.get("x", 0)) * _scale_factor.x
+			var y := float(pos.get("y", 0)) * _scale_factor.y
+			tween.tween_property(node, "position", Vector2(x, y), duration).set_ease(ease_type)
 	if t.has("scale"):
 		var s = t["scale"]
 		if typeof(s) == TYPE_DICTIONARY:
-			_current_tween.tween_property(node, "scale", Vector2(float(s.get("x", 1)), float(s.get("y", 1))), duration)
+			tween.tween_property(node, "scale", Vector2(float(s.get("x", 1)), float(s.get("y", 1))), duration).set_ease(ease_type)
 		else:
-			_current_tween.tween_property(node, "scale", Vector2(float(s), float(s)), duration)
+			tween.tween_property(node, "scale", Vector2(float(s), float(s)), duration).set_ease(ease_type)
 	if t.has("alpha"):
-		_current_tween.tween_property(node, "modulate:a", float(t["alpha"]), duration)
+		tween.tween_property(node, "modulate:a", float(t["alpha"]), duration).set_ease(ease_type)
 	if t.has("rotation"):
-		_current_tween.tween_property(node, "rotation", deg_to_rad(float(t["rotation"])), duration)
+		tween.tween_property(node, "rotation", deg_to_rad(float(t["rotation"])), duration).set_ease(ease_type)
+
+
+## 将 WebGAL easing 字符串映射为 Godot Tween.EASE 常量
+## ponytail: 暂不支持自定义贝塞尔曲线，使用 ease 近似
+func _tween_easing(easing: String) -> int:
+	match easing.to_lower():
+		"ease-in", "ease_in", "in":      return Tween.EASE_IN
+		"ease-out", "ease_out", "out":    return Tween.EASE_OUT
+		"ease-in-out", "ease_in_out":     return Tween.EASE_IN_OUT
+		_:                                 return Tween.EASE_IN_OUT
+
+
+# ======================================================================
+# Pixi 特效（基于 Godot ColorRect 近似实现）
+# ======================================================================
+
+## pixiInit: 初始化特效层
+func _pixi_init(content: String, args: Array) -> void:
+	# ponytail: 创建全屏透明层，后续特效绘制在此层上
+	_pixi_layer.visible = true
+	_pixi_layer.color = Color(0, 0, 0, 0)
+	# 如果 content 有初始化参数，暂不处理
+
+
+## pixiPerform / pixi: 执行特效
+## 支持: fadeIn, fadeOut, flash, shake, blur(简化)
+func _pixi_effect(content: String, args: Array) -> void:
+	var effect := content.strip_edges().to_lower()
+	var duration := float(_get_arg(args, "duration", 1000)) / 1000.0
+	var color_str := String(_get_arg(args, "color", "black"))
+	var color := _parse_color(color_str)
+	if effect == "fadein":
+		_pixi_layer.color = Color(color.r, color.g, color.b, 0)
+		_pixi_layer.visible = true
+		var t := create_tween()
+		t.tween_property(_pixi_layer, "color", Color(color.r, color.g, color.b, 1.0), duration)
+		t.tween_callback(_pixi_layer.set_visible.bind(false))
+	elif effect == "fadeout":
+		_pixi_layer.color = Color(color.r, color.g, color.b, 1.0)
+		_pixi_layer.visible = true
+		var t := create_tween()
+		t.tween_property(_pixi_layer, "color", Color(color.r, color.g, color.b, 0), duration)
+		t.tween_callback(_pixi_layer.set_visible.bind(false))
+	elif effect == "flash":
+		_pixi_layer.color = Color.WHITE
+		_pixi_layer.visible = true
+		var t := create_tween()
+		t.tween_property(_pixi_layer, "color", Color(1, 1, 1, 0), duration)
+		t.tween_callback(_pixi_layer.set_visible.bind(false))
+	elif effect == "shake":
+		_pixi_layer.visible = true
+		_pixi_layer.color = Color(0, 0, 0, 0)
+		# ponytail: 用 _root 的 offset 做简单抖动
+		var intensity := float(_get_arg(args, "intensity", 8))
+		var orig_pos := _root.position
+		var t := create_tween()
+		for i in range(6):
+			var ox := randf_range(-intensity, intensity)
+			var oy := randf_range(-intensity, intensity)
+			t.tween_property(_root, "position", Vector2(ox, oy), duration / 12.0)
+		t.tween_property(_root, "position", orig_pos, duration / 12.0)
+	elif effect == "blur":
+		# ponytail: blur 简化 — 半透明黑色遮罩
+		_pixi_layer.color = Color(0, 0, 0, 0.5)
+		_pixi_layer.visible = true
+	else:
+		# 未知特效，静默
+		push_warning("WebGAL[todo]: 未知 pixi 特效: " + effect)
+
+
+## 解析颜色字符串（支持英文名和 #hex）
+func _parse_color(s: String) -> Color:
+	match s.to_lower():
+		"black":  return Color.BLACK
+		"white":  return Color.WHITE
+		"red":    return Color.RED
+		"green":  return Color.GREEN
+		"blue":   return Color.BLUE
+		"yellow": return Color.YELLOW
+		"cyan":   return Color.CYAN
+		"magenta","pink": return Color.MAGENTA
+		_:
+			if s.begins_with("#"):
+				return Color(s)
+			return Color.BLACK
 
 
 # ======================================================================
@@ -710,7 +935,38 @@ func _unhandled_input(event: InputEvent) -> void:
 			_menu_bar.visible = not _menu_bar.visible
 
 
+func _input_submit(_submitted_text := "") -> void:
+	if _input_varname == "":
+		return
+	vars.set_var(_input_varname, _input_field.text)
+	_input_dialog.visible = false
+	_input_varname = ""
+	_state = State.RUNNING
+	_idx += 1
+	_continue()
+
+
+func _on_curtain_clicked(event: InputEvent) -> void:
+	# ponytail: 黑色幕布点击 → 消失并推进到下一条语句
+	if event is InputEventScreenTouch and event.pressed:
+		_curtain.visible = false
+		_curtain.modulate.a = 0.0
+		# 推进到下一步
+		_state = State.RUNNING
+		_idx += 1
+		_continue()
+	elif event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		_curtain.visible = false
+		_curtain.modulate.a = 0.0
+		_state = State.RUNNING
+		_idx += 1
+		_continue()
+
+
 func _on_advance() -> void:
+	if _input_dialog.visible:
+		_input_submit()
+		return
 	if _state == State.WAITING_INPUT:
 		_state = State.RUNNING
 		_idx += 1
@@ -988,6 +1244,8 @@ func _hide_all_gameplay() -> void:
 	_intro.visible = false
 	_choose_box.visible = false
 	_menu_bar.visible = false
+	_curtain.visible = false
+	_curtain.modulate.a = 0.0
 
 
 func _show_menu_bar() -> void:
@@ -1017,7 +1275,19 @@ func _clear_screen() -> void:
 	if _bg:
 		_bg.texture = null
 		_bg.visible = true
+		_bg.position = Vector2.ZERO
+		_bg.scale = Vector2.ONE
+		_bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+		_bg.offset_left = 0
+		_bg.offset_top = 0
+		_bg.offset_right = 0
+		_bg.offset_bottom = 0
+		_bg.modulate.a = 1.0
+		_bg.rotation = 0.0
 	_figure_container.visible = true  # ponytail: 恢复被 _hide_all_gameplay 隐藏的容器
+	# ponytail: 清理时隐藏幕布（不删除，保留节点）
+	_curtain.visible = false
+	_curtain.modulate.a = 0.0
 	for f in _figures.values():
 		var tr: TextureRect = f
 		tr.texture = null
@@ -1072,6 +1342,7 @@ func _build_ui() -> void:
 	_figure_container = Control.new()
 	_figure_container.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_figure_container.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_figure_container.z_index = 1  # 在背景之上
 	_root.add_child(_figure_container)
 
 	_dialog = Panel.new()
@@ -1079,6 +1350,7 @@ func _build_ui() -> void:
 	_dialog.offset_top = -200
 	_dialog.offset_bottom = -8
 	_dialog.mouse_filter = Control.MOUSE_FILTER_IGNORE  # 点击穿透，不阻挡触屏事件
+	_dialog.z_index = 3  # 在遮罩之上
 	_root.add_child(_dialog)
 	_dlg_speaker = Label.new()
 	_dlg_speaker.set_anchors_preset(Control.PRESET_TOP_WIDE)
@@ -1103,6 +1375,7 @@ func _build_ui() -> void:
 	_intro = ColorRect.new()
 	_intro.color = Color.BLACK
 	_intro.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_intro.z_index = 2  # 普通遮罩
 	_root.add_child(_intro)
 	_intro_label = Label.new()
 	_intro_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -1116,13 +1389,52 @@ func _build_ui() -> void:
 	_choose_box.set_anchors_preset(Control.PRESET_CENTER)
 	_choose_box.add_theme_constant_override("separation", 12)
 	_choose_box.visible = false
-
+	_choose_box.z_index = 4  # 在聊天框之上
+	# === Pixi 特效层 ===
+	_pixi_layer = ColorRect.new()
+	_pixi_layer.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_pixi_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_pixi_layer.visible = false
+	_pixi_layer.z_index = 2  # 普通遮罩/图片层
+	_root.add_child(_pixi_layer)
+	# === 输入框 ===
+	_input_dialog = Control.new()
+	_input_dialog.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_input_dialog.visible = false
+	_input_dialog.mouse_filter = Control.MOUSE_FILTER_STOP  # 阻挡点击穿透
+	_input_dialog.z_index = 4  # 在聊天框之上
+	_root.add_child(_input_dialog)
+	var _input_bg := ColorRect.new()
+	_input_bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_input_bg.color = Color(0, 0, 0, 0.6)
+	_input_dialog.add_child(_input_bg)
+	var _input_panel := Panel.new()
+	_input_panel.set_anchors_preset(Control.PRESET_CENTER)
+	_input_panel.custom_minimum_size = Vector2(500, 150)
+	_input_dialog.add_child(_input_panel)
+	_input_field = LineEdit.new()
+	_input_field.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	_input_field.offset_top = 20
+	_input_field.offset_left = 20
+	_input_field.offset_right = -20
+	_input_field.add_theme_font_size_override("font_size", 24)
+	_input_field.text_submitted.connect(_input_submit)
+	_input_panel.add_child(_input_field)
+	_input_btn = Button.new()
+	_input_btn.text = "确定"
+	_input_btn.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	_input_btn.offset_bottom = -10
+	_input_btn.offset_left = 150
+	_input_btn.offset_right = -150
+	_input_btn.pressed.connect(_input_submit)
+	_input_panel.add_child(_input_btn)
 	# === 菜单栏（顶部） ===
 	_menu_bar = HBoxContainer.new()
 	_menu_bar.set_anchors_preset(Control.PRESET_TOP_WIDE)
 	_menu_bar.offset_top = 8
 	_menu_bar.add_theme_constant_override("separation", 8)
 	_menu_bar.visible = false
+	_menu_bar.z_index = 5  # 在选项/输入框之上
 	_root.add_child(_menu_bar)
 
 	_btn_save = Button.new()
@@ -1154,6 +1466,7 @@ func _build_ui() -> void:
 	_title_screen = Control.new()
 	_title_screen.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_title_screen.visible = false
+	_title_screen.z_index = 8  # 在幕布之下、菜单之上
 	_root.add_child(_title_screen)
 
 	_title_bg = TextureRect.new()
@@ -1202,8 +1515,8 @@ func _build_ui() -> void:
 	_sl_menu = Panel.new()
 	_sl_menu.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_sl_menu.visible = false
+	_sl_menu.z_index = 6  # 在菜单栏之上
 	_root.add_child(_sl_menu)
-
 	_root.add_child(_choose_box)
 	_sl_title = Label.new()
 	_sl_title.set_anchors_preset(Control.PRESET_TOP_WIDE)
@@ -1228,3 +1541,15 @@ func _build_ui() -> void:
 	_sl_btn_close.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	_sl_btn_close.pressed.connect(_close_sl_menu)
 	_sl_menu.add_child(_sl_btn_close)
+
+	# === 黑色幕布遮罩（最顶层，章节转场用，点击消失） ===
+	_curtain = ColorRect.new()
+	_curtain.name = "Curtain"
+	_curtain.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_curtain.color = Color.BLACK
+	_curtain.modulate.a = 0.0  # 初始透明
+	_curtain.mouse_filter = Control.MOUSE_FILTER_STOP  # 拦截点击
+	_curtain.visible = false
+	_curtain.z_index = 10  # 最顶层
+	_curtain.gui_input.connect(_on_curtain_clicked)
+	_root.add_child(_curtain)

@@ -83,16 +83,21 @@ game_root/
 | `callScene` / `return` | 子场景调用与返回 |
 | `label` / `jumpLabel` | 标签跳转 |
 | `setVar` | 变量设置与数学表达式求值 |
-| `setTransform` | 立绘运镜（position/scale/alpha/rotation），支持 Tween 动画 |
+| `setTransform` | 立绘/节点运镜（position/scale/alpha/rotation），支持 Tween 动画 |
+| `setTransition` | 同 `setTransform`，仅别名 |
 | `setAnimation` | 从 JSON 动画文件播放关键帧动画 |
 | `playEffect` | 播放音效 |
 | `wait` | 等待指定秒数 |
 | `end` | 结束游戏 |
 | `getUserInput` | 获取输入（当前仅做默认值赋值） |
+| `pixi` / `pixiInit` | 简单画面特效（fadeIn/fadeOut 等） |
+| `setTextbox` | 显示/隐藏对话框：`setTextbox:on` / `setTextbox:hide` |
+| `unlockCg` | 解锁 CG（日志记录，无图鉴界面） |
+| `unlockBgm` | 解锁 BGM（日志记录，无图鉴界面） |
 
-### 占位不崩溃（跳过不执行）
+### 未实现（静默跳过）
 
-`miniAvatar`、`filmMode`、`setTextbox`、`unlockCg`、`unlockBgm`、`pixiInit`、`pixiPerform`、`applyStyle`、`setTransition`、`setTempAnimation`、`callSteam`、`video`、`showVars` 等命令会被识别但静默跳过，不会触发运行时错误。
+`miniAvatar`、`filmMode`、`applyStyle`、`setTempAnimation`、`callSteam`、`video`、`showVars` 等命令会被识别但静默跳过，不会触发运行时错误。
 
 ## 游戏操作
 
@@ -134,11 +139,12 @@ addons/webgal/
 ## 已知限制
 
 - **Ogg/Opus 音频**：当前不支持（Godot 4 无 `load_from_file` API），`mp3` 和 `wav` 正常工作
-- **Pixi 特效 / Live2D**：未实现，静默跳过
+- **Pixi 特效 / Live2D**：Pixi 基础 fadeIn/fadeOut 已实现，复杂粒子特效未实现；Live2D 未实现
 - **`setAnimation` 关键帧插值**：仅做线性 Tween，未实现 WebGAL 原版贝塞尔曲线
 - **`getUserInput` 输入框**：当前仅做默认值赋值，未弹出 UI 输入框
-- **图鉴系统**：`unlockCg` / `unlockBgm` 仅占位，无图鉴界面
+- **图鉴系统**：`unlockCg` / `unlockBgm` 仅日志记录，无实际图鉴界面
 - **视频播放**：`video` 命令未实现
+- **`setTransform` 参数式写法**：`setTransform: -target=xxx -alpha=0.33`（无 JSON content）当前不被解析，仅支持 content 内嵌 JSON 或 `-transform` 参数
 
 ## 许可证
 
