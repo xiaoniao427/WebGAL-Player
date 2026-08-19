@@ -17,6 +17,15 @@ static func is_empty_or_comment(line: String) -> bool:
 	var t := line.strip_edges()
 	return t == "" or t.begins_with(";") or t.begins_with("//")
 
+## 解析完整脚本（多行文本）。返回 Sentence 数组，跳过空行和注释。
+func parse(text: String) -> Array:
+	var out: Array = []
+	for line in text.split("\n"):
+		var s := parse_line(line)
+		if not s.is_empty():
+			out.append(s)
+	return out
+
 ## 解析一行。返回 Sentence(dictionary)，空/注释返回 {}。
 func parse_line(line: String) -> Dictionary:
 	var t := line.strip_edges()

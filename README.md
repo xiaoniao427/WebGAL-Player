@@ -6,6 +6,44 @@ Godot 4.x 编辑器插件，用于在 Godot 中直接运行 [WebGAL](https://git
 
 插件读取 WebGAL 标准游戏目录结构（`scene/`、`background/`、`figure/`、`bgm/`、`vocal/`、`config.txt`、`animation/` 等），在 Godot 运行时中逐条解析并执行 WebGAL 脚本。所有 UI 层（对话、背景、立绘、选择分支、标题界面、存档界面）均由 Godot Control 节点构造，不依赖浏览器或 WebView。
 
+## 架构
+
+插件采用 **Core 模块化架构**，与 WebGAL 原项目（TypeScript）文件级代码对应：
+
+```
+addons/webgal/src/
+├── webgal_player.gd        # 薄 Node 包装器：UI 构建 + 委托给 Core
+├── models.gd                # 数据模型（命令枚举 WebgalModels.Cmd）
+├── commands.gd              # 命令字符串 ↔ 枚举映射
+├── script_parser.gd         # 单行/全文 WebGAL 脚本解析器
+├── config_parser.gd         # config.txt 解析器
+├── variables.gd             # 变量系统（插值、数学求值）
+├── assets.gd                # 资源定位与加载（图片、音频）
+└── Core/                    # 对应 WebGAL 的 packages/webgal/src/Core/
+    ├── WebGAL.gd            # 全局单例 WebgalCore，持有所有模块引用
+    ├── constants.gd         # 常量（设计尺寸、默认时长等）
+    ├── Modules/
+    │   ├── SceneManager.gd      # 场景栈（最大 64 层）
+    │   ├── GamePlay.gd          # 运行时状态（自动/快进）
+    │   ├── StageStateManager.gd # 双层状态机（calculation/view）
+    │   └── PerformController.gd # 演出控制
+    ├── controller/
+    │   ├── ScriptExecutor.gd    # 语句执行器（when/插值/跳转）
+    │   ├── RunScript.gd         # 命令分发（match cmd → gameScript）
+    │   ├── StrIf.gd             # 条件表达式求值
+    │   ├── PlayBgm.gd           # BGM 播放
+    │   ├── NextSentence.gd      # 推进语句
+    │   ├── AutoPlay.gd          # 自动播放
+    │   ├── BackToTitle.gd       # 返回标题
+    │   ├── ResetStage.gd        # 舞台重置
+    │   └── StopAllPerform.gd    # 停止所有演出
+    └── gameScripts/            # 20 个命令文件
+        Say/ChangeBg/ChangeFigure/Bgm/Intro/Choose/End/
+        SetVar/Wait/PlayEffect/ChangeScene/CallScene/Return/
+        JumpLabel/SetTransform/SetAnimation/GetUserInput/
+        Pixi/PixiInit/SetTextbox/UnlockCg/UnlockBgm
+```
+
 ## 快速开始
 
 ### 安装
@@ -40,32 +78,47 @@ Godot 4.x 编辑器插件，用于在 Godot 中直接运行 [WebGAL](https://git
 
 ## 目录结构
 
-插件期望游戏目录遵循 WebGAL 标准结构：
+插件期望游戏目录遵循 WebGAL 标准结构，并增加编译缓存：
 
 ```
 game_root/
 ├── config.txt              # 游戏配置（标题、背景、BGM 等）
 ├── start.txt               # 起始场景（可由 start_scene 参数修改）
-├── scene/                  # 场景脚本文件（.txt）
+├── scene/                  # 场景脚本文件（.txt）— 源码
 │   ├── start.txt
 │   └── ...
-├── background/             # 背景图片（jpg/png）
-│   ├── bg.png
-│   └── ...
-├── figure/                 # 立绘图片（jpg/png）
-│   ├── char1.png
-│   └── ...
-├── bgm/                    # 背景音乐（mp3/wav）
-│   └── ...
-├── vocal/                  # 语音/音效（wav/mp3）
-│   └── ...
-├── tex/                    # 其他贴图资源
-│   └── ...
-├── video/                  # 视频文件（当前未实现）
-│   └── ...
-└── animation/              # 动画 JSON 定义（setAnimation 命令）
+├── ...
+└── addons/webgal/
+    ├── dist/
+    │   └── scene_data.json  # 编译产物（自动生成，勿手动编辑）
+    ├── compiler/
+    │   ├── compiler.gd      # 编译器核心
+    │   └── compile.gd       # EditorScript（手动触发）
     └── ...
 ```
+
+## 编译工作流
+
+本插件采用 **形态 1 架构**：编译器在 Godot 编辑器内运行，产出 JSON 缓存，运行时零解析。
+
+### 工作方式
+
+| 阶段 | 行为 |
+|------|------|
+| 开发期 | 编辑 `scene/*.txt` 后，重启游戏 → 自动检测文件变更 → 自动重编译 → 加载最新编译结果 |
+| 编辑器 | 点击工具栏 **「编译 WebGAL」** 按钮手动触发编译 |
+| 打包 | 预编译产物 `dist/scene_data.json` 随 APK 打包，运行时直接加载，零解析开销 |
+
+### 优先级
+
+1. 如果 `dist/scene_data.json` 存在 → 加载缓存（**优先**）
+2. 如果缓存不存在 → 运行时逐行解析（**向下兼容**，旧工作流不变）
+
+### 自动重编译触发条件
+
+- 仅在编辑器内（`Engine.is_editor_hint()`）
+- 任意 `scene/*.txt` 的 mtime 比 `dist/scene_data.json` 新
+- 重编译后自动重新加载缓存，无需手动操作
 
 ## 已支持的命令
 
@@ -123,17 +176,64 @@ game_root/
 ```
 addons/webgal/
 ├── plugin.cfg              # 插件元数据
-├── plugin.gd               # 编辑器插件入口（注册 WebgalPlayer 自定义类型）
+├── plugin.gd               # 编辑器插件入口（注册 WebgalPlayer 类型 + 编译按钮）
 ├── webgal.tscn             # 预置场景（可直接拖入）
 ├── README.md               # 本文件
+├── shaders/
+│   └── blur.gdshader       # 背景模糊着色器（9-tap box blur）
+├── dist/
+│   └── scene_data.json     # 编译产物（自动生成）
+├── compiler/
+│   ├── compiler.gd         # 编译器核心（class_name WebgalCompiler）
+│   └── compile.gd          # EditorScript：右键 → Run 手动编译
 └── src/
-    ├── webgal_player.gd    # 主运行时（UI 构建、场景执行、命令处理）
-    ├── models.gd            # 数据模型（命令枚举、语句构造）
-    ├── commands.gd          # 命令字符串 → 枚举映射
-    ├── script_parser.gd     # 单行 WebGAL 脚本解析器
+    ├── webgal_player.gd    # 薄 Node 包装器（UI 构建 + 委托给 Core）
+    ├── models.gd            # 数据模型（WebgalModels.Cmd 枚举等）
+    ├── commands.gd          # 命令字符串 ↔ 枚举映射
+    ├── script_parser.gd     # WebGAL 脚本解析器（单行/全文）
     ├── config_parser.gd     # config.txt 解析器
     ├── variables.gd         # 变量系统（插值、数学求值）
-    └── assets.gd            # 资源定位与加载（图片、音频）
+    ├── assets.gd            # 资源定位与加载（图片、音频）
+    └── Core/                # 与 WebGAL 原项目文件级对应
+        ├── WebGAL.gd        # 全局单例 WebgalCore
+        ├── constants.gd     # 常量（设计尺寸、默认时长等）
+        ├── Modules/
+        │   ├── SceneManager.gd
+        │   ├── GamePlay.gd
+        │   ├── StageStateManager.gd
+        │   └── PerformController.gd
+        ├── controller/
+        │   ├── ScriptExecutor.gd
+        │   ├── RunScript.gd
+        │   ├── StrIf.gd
+        │   ├── PlayBgm.gd
+        │   ├── ResetStage.gd
+        │   ├── NextSentence.gd
+        │   ├── AutoPlay.gd
+        │   ├── BackToTitle.gd
+        │   └── StopAllPerform.gd
+        └── gameScripts/    # 20 个命令文件
+            ├── Say.gd
+            ├── ChangeBg.gd
+            ├── ChangeFigure.gd
+            ├── Bgm.gd
+            ├── Intro.gd
+            ├── Choose.gd
+            ├── End.gd
+            ├── SetVar.gd
+            ├── Wait.gd
+            ├── PlayEffect.gd
+            ├── ChangeScene.gd
+            ├── CallScene.gd
+            ├── Return.gd
+            ├── JumpLabel.gd
+            ├── SetTransform.gd
+            ├── SetAnimation.gd
+            ├── GetUserInput.gd
+            ├── Pixi.gd / PixiInit.gd
+            ├── SetTextbox.gd
+            ├── UnlockCg.gd
+            └── UnlockBgm.gd
 ```
 
 ## 已知限制
@@ -145,6 +245,7 @@ addons/webgal/
 - **图鉴系统**：`unlockCg` / `unlockBgm` 仅日志记录，无实际图鉴界面
 - **视频播放**：`video` 命令未实现
 - **`setTransform` 参数式写法**：`setTransform: -target=xxx -alpha=0.33`（无 JSON content）当前不被解析，仅支持 content 内嵌 JSON 或 `-transform` 参数
+- **编译器**：`compiler/compiler.gd` 使用与运行时相同的 `script_parser.gd` 解析器，语法兼容性取决于 parser 实现。编译器本身不依赖 Node 工具链，完全在 Godot 编辑器内运行。
 
 ## 许可证
 
