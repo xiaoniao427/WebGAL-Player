@@ -18,6 +18,9 @@ const _DIRS := {
 	"tex": "tex",
 }
 
+# 纹理缓存：避免重复创建 ImageTexture 导致 GPU 内存抖动/不断创建的问题
+var _texture_cache := {}
+
 func _init() -> void:
 	pass
 
@@ -44,17 +47,37 @@ func load_texture(file_name: String, type_name := "background") -> Texture2D:
 	if file_name == "" or file_name == "none":
 		return null
 	var p := resolve(file_name, type_name)
+
+	# 先查缓存
+	if _texture_cache.has(p):
+		return _texture_cache[p]
+
 	# ponytail: res:// 路径优先用 ResourceLoader（导出后 pck 内可用），
 	# 非 res:// 路径或未导入的 res:// 资源走 Image.load_from_file fallback
 	if p.begins_with("res://"):
 		var tex := ResourceLoader.load(p, "Texture2D", ResourceLoader.CACHE_MODE_REUSE)
 		if tex:
+			_texture_cache[p] = tex
 			return tex
+
+	# 检查文件存在性：在移动平台上路径/大小写/权限常导致间歇性不可读
+	if not FileAccess.file_exists(p):
+		push_warning("WebGAL: 图片文件不存在或无法访问: " + p)
+		return null
+
 	var img := Image.load_from_file(p)
 	if img == null:
 		push_warning("WebGAL: 无法加载图片 " + p)
 		return null
-	return ImageTexture.create_from_image(img)
+
+	# 在主线程创建 GPU 纹理；此处调用是同步的（确保从主线程调用本函数）
+	var tex2 := ImageTexture.create_from_image(img)
+	if tex2 == null:
+		push_warning("WebGAL: ImageTexture.create_from_image 返回 null: " + p)
+		return null
+
+	_texture_cache[p] = tex2
+	return tex2
 
 ## 加载音频流。返回 null 表示失败/空。
 func load_audio(file_name: String, type_name := "bgm") -> AudioStream:
