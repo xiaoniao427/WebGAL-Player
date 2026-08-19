@@ -4,7 +4,9 @@
 class_name WebgalCompiler
 
 ## 编译全部场景。返回 场景数量(int) 或 错误信息(String)
-func compile(game_root: String) -> Variant:
+# 支持自定义模板：可在 game_root + "addons/webgal/dist/template.json" 放置一个 JSON 文件，
+# 编译器会把 scenes 字段替换为本次编译的 scene_data，保留模板中其它字段。
+func compile(game_root: String, template_path: String = "") -> Variant:
 	var scene_dir := game_root + "scene/"
 	var dist_dir := game_root + "addons/webgal/dist/"
 	
@@ -33,11 +35,35 @@ func compile(game_root: String) -> Variant:
 		scene_data[rel] = sentences
 		scene_count += 1
 	
-	# 写入 JSON
+	# 构造输出 JSON 对象：默认结构
 	var output := {
 		"version": 1,
 		"scenes": scene_data
 	}
+
+	# 如果存在自定义模板（优先使用传入 template_path，否则查找 dist_dir + template.json），
+	# 则把模板作为 base，替换/注入 scenes 字段
+	var tpl_path := template_path
+	if tpl_path == "":
+		tpl_path = dist_dir + "template.json"
+	if FileAccess.file_exists(tpl_path):
+		var tpl_raw := _read_text(tpl_path)
+		if tpl_raw != "":
+			var parsed := JSON.parse_string(tpl_raw)
+			if parsed is Dictionary:
+				# 使用模板为 base，但强制注入本次编译的 scenes
+				var base := parsed.duplicate(true)
+				base["scenes"] = scene_data
+				# 如果模板没有 version，保留原 default
+				if not base.has("version"):
+					base["version"] = 1
+				output = base
+			else:
+				push_warning("WebGAL 编译: 无法解析模板 JSON: " + tpl_path)
+		else:
+			push_warning("WebGAL 编译: 读取模板失败: " + tpl_path)
+
+	# 将结果序列化为 JSON（带缩进）
 	var json_str := JSON.stringify(output, "\t")
 	
 	# 确保 dist 目录存在
