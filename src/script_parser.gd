@@ -3,7 +3,7 @@
 # 输入：一行 WebGAL 原文
 # 输出：{command:int, content:String, args:Array[{key,value}], raw:String} 或 {}
 # 规则（对齐原版）：
-#   - 行首以 ; 或 // 开头 -> 注释（返回 {}）
+#   - 行首以 ; 或 // 开头 -> 注释（返回 {})
 #   - `;` 是行尾注释起点（`\;` 转义），取分号前部分
 #   - 第一个`:`分隔命令/说话人与内容
 #   - ` -` 后是参数字段
@@ -37,6 +37,15 @@ func parse_line(line: String) -> Dictionary:
 		t = t.substr(0, semi).strip_edges()
 		if t == "":
 			return {}
+
+	# 兼容全角标点：把常见全角符号规范化为半角，减少脚本中中文标点导致的解析失败
+	# 注意：仅做字符替换，不改变转义逻辑（转义字符仍为 ASCII 反斜杠）
+	t = t.replace("：", ":")
+	t = t.replace("－", "-")
+	t = t.replace("，", ",")
+	t = t.replace("；", ";")
+	t = t.replace("→", "->")
+
 	# 第一个冒号
 	var colon := _find_unescaped(t, ":")
 	var head := ""
@@ -47,10 +56,12 @@ func parse_line(line: String) -> Dictionary:
 		t = t.substr(colon + 1)
 	# 分离参数字段（" -"）
 	var arg_sub := ""
-	var dash := t.find(" -")
-	if dash >= 0:
-		arg_sub = t.substr(dash + 2)
-		t = t.substr(0, dash)
+	# 我们需要在不处于括号/中括号/花括号/引号内的情况下拆分参数，
+	# 因为 transform 的 JSON 字符串可能包含空格和减号。
+	var dash_index := _find_arg_split_index(t)
+	if dash_index >= 0:
+		arg_sub = t.substr(dash_index + 1).strip_edges()
+		t = t.substr(0, dash_index)
 	content = t.strip_edges()
 
 	# 确定命令与隐式参数
@@ -74,7 +85,7 @@ func parse_line(line: String) -> Dictionary:
 		else:
 			args.append(WebgalModels.make_arg("say", true))
 
-	# 解析参数
+	# 解析参数：使用更稳健的拆分函数，避免在 JSON/[]/() 中误拆分
 	for raw_arg in _split_args(arg_sub):
 		var a := _parse_arg(raw_arg)
 		if a != null:
@@ -96,14 +107,114 @@ func _find_unescaped(s: String, c: String) -> int:
 	return -1
 
 
-## 拆分参数段（原版 split(" -")）
+## 在外层（未进入引号/括号/中括号/花括号）查找参数区分的起始索引（第一个前导 '-'）
+func _find_arg_split_index(s: String) -> int:
+	var in_single := false
+	var in_double := false
+	var paren := 0
+	var brace := 0
+	var bracket := 0
+	var i := 0
+	while i < s.length():
+		var ch := s[i]
+		# 处理转义
+		if ch == "\\":
+			i += 2
+			continue
+		if ch == "'" and not in_double:
+			in_single = not in_single
+		elif ch == '"' and not in_single:
+			in_double = not in_double
+		elif not in_single and not in_double:
+			if ch == '(':
+				paren += 1
+			elif ch == ')':
+				paren = max(paren - 1, 0)
+			elif ch == '{':
+				brace += 1
+			elif ch == '}':
+				brace = max(brace - 1, 0)
+			elif ch == '[':
+				bracket += 1
+			elif ch == ']':
+				bracket = max(bracket - 1, 0)
+			# 当遇到空格后紧跟 '-' 且不在任何括号/引号内，认为是参数段的开始
+			if ch == ' ' and i + 1 < s.length() and s[i + 1] == '-' and paren == 0 and brace == 0 and bracket == 0:
+				return i + 1
+		i += 1
+	# 也支持以 '-' 开头的参数（无前导空格），但必须在外层
+	if s.length() > 0 and s[0] == '-' and paren == 0 and brace == 0 and bracket == 0 and not in_single and not in_double:
+		return 0
+	return -1
+
+
+## 拆分参数段（更稳健）：在外层以 " -" 或行首的 '-' 作为分隔符
 func _split_args(s: String) -> Array:
 	if s.strip_edges() == "":
 		return []
-	var out: Array = []
-	for p in s.split(" -", false):
+	var delim := "|~ARG~|"
+	var buf := ""
+	var out_s := ""
+	var in_single := false
+	var in_double := false
+	var paren := 0
+	var brace := 0
+	var bracket := 0
+	var i := 0
+	while i < s.length():
+		var ch := s[i]
+		# 处理转义
+		if ch == "\\":
+			buf += ch
+			i += 1
+			if i < s.length():
+				buf += s[i]
+				i += 1
+			continue
+		if ch == "'" and not in_double:
+			in_single = not in_single
+		elif ch == '"' and not in_single:
+			in_double = not in_double
+		elif not in_single and not in_double:
+			if ch == '(':
+				paren += 1
+			elif ch == ')':
+				paren = max(paren - 1, 0)
+			elif ch == '{':
+				brace += 1
+			elif ch == '}':
+				brace = max(brace - 1, 0)
+			elif ch == '[':
+				bracket += 1
+			elif ch == ']':
+				bracket = max(bracket - 1, 0)
+			# 在外层检测到空格 + '-' 作为参数起始
+			if ch == ' ' and i + 1 < s.length() and s[i + 1] == '-' and paren == 0 and brace == 0 and bracket == 0:
+				out_s += buf + delim
+				buf = ""
+				i += 1 # skip the '-'
+				# 跳过后续空格
+				while i + 1 < s.length() and s[i + 1] == ' ':
+					i += 1
+				continue
+		buf += ch
+		i += 1
+	# 行首直接以 '-' 开头，也当作第一个参数起点
+	if out_s == "" and s.strip_edges().begins_with("-"):
+		# 不需要特殊处理，buf 已包含全部
+		pass
+	else:
+		if buf != "":
+			out_s += buf
+	# 最后按 delim 拆分
+	var parts := out_s.split(delim, false)
+	var out := []
+	for p in parts:
 		var trimmed := p.strip_edges()
 		if trimmed != "":
+			# 如果参数以 '-' 开头，去掉它
+			if trimmed.begins_with("-"):
+				trimmed = trimmed.substr(1).strip_edges()
 			out.append(trimmed)
 	return out
 
