@@ -52,7 +52,7 @@ func compile(game_root: String, template_path: String = "") -> Variant:
 			var parsed := JSON.parse_string(tpl_raw)
 			if parsed is Dictionary:
 				# 使用模板为 base，但强制注入本次编译的 scenes
-				var base := parsed.duplicate(true)
+				var base: Dictionary = parsed.duplicate(true) as Dictionary
 				base["scenes"] = scene_data
 				# 如果模板没有 version，保留原 default
 				if not base.has("version"):
