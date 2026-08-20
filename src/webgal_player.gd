@@ -25,6 +25,7 @@ var _speaker_memory: String = ""
 var _bg_path: String = ""
 var _bgm_path: String = ""
 var _figures: Dictionary = {}  # id -> TextureRect
+var _waiting_replacements: Dictionary = {} # resolved_path -> [nodes waiting]
 var _scene_cache: Dictionary = {}
 var _sentences: Array = []
 var _idx: int = 0
@@ -81,6 +82,9 @@ func _ready() -> void:
 	var core := WebgalCore.new()
 	core.initialize(root)
 	add_child(core)
+	# connect asset texture_ready if available
+	if core.assets != null and not core.assets.is_connected("texture_ready", self, "_on_texture_ready"):
+		core.assets.connect("texture_ready", Callable(self, "_on_texture_ready"))
 	process_mode = PROCESS_MODE_ALWAYS
 	_blur_shader = load("res://addons/webgal/shaders/blur.gdshader")
 	if _blur_shader == null:
@@ -373,6 +377,12 @@ func _set_bg(file: String, args: Array) -> void:
 		var t: Variant = _get_arg(args, "transform")
 		if t != null:
 			_apply_bg_transform(t)
+	# if placeholder texture (1x1), wait for actual texture
+	if tex != null and tex.get_width() == 1 and tex.get_height() == 1:
+		var resolved := core.assets.resolve(file, "background")
+		var arr := _waiting_replacements.get(resolved, [])
+		arr.append(_bg)
+		_waiting_replacements[resolved] = arr
 
 
 func _set_figure(file: String, args: Array) -> void:
@@ -391,6 +401,12 @@ func _set_figure(file: String, args: Array) -> void:
 	var tex := core.assets.load_texture(file, "figure")
 	node.texture = tex
 	node.visible = tex != null
+	# if placeholder, wait for replacement
+	if tex != null and tex.get_width() == 1 and tex.get_height() == 1:
+		var resolved := core.assets.resolve(file, "figure")
+		var arr := _waiting_replacements.get(resolved, [])
+		arr.append(node)
+		_waiting_replacements[resolved] = arr
 	var zi: Variant = _get_arg(args, "zIndex")
 	if zi != null:
 		node.z_index = int(zi)
@@ -646,18 +662,15 @@ func _set_animation(content: String, args: Array) -> void:
 	var core := WebgalCore.instance
 	if core == null:
 		return
-	var anim_path := "animation/" + content + ".json"
-	var full := core.game_root + anim_path
-	var raw := _read_text(full)
-	if raw == "":
-		raw = _read_text("res://" + anim_path)
-	if raw == "":
-		push_warning("WebGAL: 动画文件不存在 ", full)
+	# Use assets.load_json to resolve and read animation JSON
+	var anim_data = core.assets.load_json("exit/" + content + ".json", "animation")
+	if anim_data == null:
+		push_warning("WebGAL: 动画文件不存在或无法解析: exit/" + content + ".json -> 跳过动画")
 		return
-	var json := JSON.parse_string(raw)
-	if json == null or typeof(json) != TYPE_ARRAY:
+	if typeof(anim_data) != TYPE_ARRAY:
+		push_warning("WebGAL: 动画 JSON 不是数组: exit/" + content + ".json -> 跳过动画")
 		return
-	var frames: Array = json
+	var frames: Array = anim_data
 	if _current_tween:
 		_current_tween.kill()
 	_current_tween = create_tween()
@@ -998,205 +1011,3 @@ func _build_ui() -> void:
 	_choose_box.offset_bottom = 100
 	_choose_box.offset_left = -200
 	_choose_box.offset_right = 200
-	_root.add_child(_choose_box)
-
-	_menu_bar = HBoxContainer.new()
-	_menu_bar.set_anchors_preset(Control.PRESET_TOP_WIDE)
-	_menu_bar.offset_top = 10
-	_menu_bar.alignment = BoxContainer.ALIGNMENT_CENTER
-	_menu_bar.visible = false
-	_root.add_child(_menu_bar)
-
-	_btn_save = Button.new()
-	_btn_save.text = "存档"
-	_btn_save.pressed.connect(_on_save)
-	_menu_bar.add_child(_btn_save)
-
-	_btn_load = Button.new()
-	_btn_load.text = "读档"
-	_btn_load.pressed.connect(_on_load_game)
-	_menu_bar.add_child(_btn_load)
-
-	_btn_speed = Button.new()
-	_btn_speed.text = "x1"
-	_btn_speed.pressed.connect(_on_speed)
-	_menu_bar.add_child(_btn_speed)
-
-	_btn_auto = Button.new()
-	_btn_auto.text = "自动"
-	_btn_auto.pressed.connect(_on_auto)
-	_menu_bar.add_child(_btn_auto)
-
-	_btn_title = Button.new()
-	_btn_title.text = "标题"
-	_btn_title.pressed.connect(_on_title)
-	_menu_bar.add_child(_btn_title)
-
-	_title_screen = Control.new()
-	_title_screen.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_title_screen.visible = true
-	_root.add_child(_title_screen)
-
-	_title_bg = TextureRect.new()
-	_title_bg.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_title_bg.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
-	_title_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_title_screen.add_child(_title_bg)
-
-	_title_logo = TextureRect.new()
-	_title_logo.set_anchors_preset(Control.PRESET_TOP_WIDE)
-	_title_logo.offset_top = 60
-	_title_logo.offset_bottom = -300
-	_title_logo.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	_title_logo.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_title_logo.visible = false
-	_title_screen.add_child(_title_logo)
-
-	_title_btn_grp = VBoxContainer.new()
-	_title_btn_grp.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
-	_title_btn_grp.offset_left = -120
-	_title_btn_grp.offset_right = -10
-	_title_btn_grp.offset_top = -220
-	_title_btn_grp.offset_bottom = -10
-	_title_btn_grp.add_theme_constant_override("separation", 10)
-	_title_screen.add_child(_title_btn_grp)
-
-	_title_btn_start = Button.new()
-	_title_btn_start.text = "开始游戏"
-	_title_btn_start.pressed.connect(_on_start_game)
-	_title_btn_grp.add_child(_title_btn_start)
-
-	_title_btn_continue = Button.new()
-	_title_btn_continue.text = "继续游戏"
-	_title_btn_continue.pressed.connect(_on_continue_game)
-	_title_btn_grp.add_child(_title_btn_continue)
-
-	_title_btn_load = Button.new()
-	_title_btn_load.text = "读取存档"
-	_title_btn_load.pressed.connect(_on_load_game)
-	_title_btn_grp.add_child(_title_btn_load)
-
-	var _btn_gallery := Button.new()
-	_btn_gallery.text = "鉴赏模式"
-	_btn_gallery.pressed.connect(_on_gallery)
-	_title_btn_grp.add_child(_btn_gallery)
-
-	_title_bgm_player = AudioStreamPlayer.new()
-	_title_bgm_player.name = "TitleBGMPlayer"
-	_title_screen.add_child(_title_bgm_player)
-
-	_sl_menu = Panel.new()
-	_sl_menu.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_sl_menu.visible = false
-	_sl_menu.mouse_filter = Control.MOUSE_FILTER_PASS
-	_root.add_child(_sl_menu)
-
-	_sl_title = Label.new()
-	_sl_title.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	_sl_title.offset_left = 10
-	_sl_title.offset_top = 10
-	_sl_title.add_theme_font_size_override("font_size", 24)
-	_sl_menu.add_child(_sl_title)
-
-	_sl_grid = GridContainer.new()
-	_sl_grid.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_sl_grid.offset_left = 10
-	_sl_grid.offset_top = 50
-	_sl_grid.offset_right = -10
-	_sl_grid.offset_bottom = -50
-	_sl_grid.columns = 3
-	_sl_menu.add_child(_sl_grid)
-
-	_sl_btn_close = Button.new()
-	_sl_btn_close.text = "关闭"
-	_sl_btn_close.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
-	_sl_btn_close.offset_right = -10
-	_sl_btn_close.offset_bottom = -10
-	_sl_btn_close.pressed.connect(_close_sl_menu)
-	_sl_menu.add_child(_sl_btn_close)
-
-
-var _sl_mode: String = ""
-
-func _on_save() -> void:
-	_sl_mode = "save"
-	_open_sl_menu()
-
-func _on_speed() -> void:
-	match _speed:
-		Speed.NORMAL:
-			_speed = Speed.DOUBLE
-			_btn_speed.text = "x2"
-		Speed.DOUBLE:
-			_speed = Speed.TRIPLE
-			_btn_speed.text = "x3"
-		Speed.TRIPLE:
-			_speed = Speed.NORMAL
-			_btn_speed.text = "x1"
-
-func _on_auto() -> void:
-	_auto_advance = not _auto_advance
-	_btn_auto.text = "自动✓" if _auto_advance else "自动"
-
-func _on_title() -> void:
-	_show_title()
-
-func _on_gallery() -> void:
-	print("WebGAL: 鉴赏模式 — 暂未实现")
-
-func _open_sl_menu() -> void:
-	_sl_title.text = "存档" if _sl_mode == "save" else "读档"
-	_clear_children(_sl_grid)
-	_sl_slots.clear()
-	DirAccess.make_dir_recursive_absolute(SAVE_DIR)
-	for i in range(MAX_SLOTS):
-		var sc := VBoxContainer.new()
-		var slot_path := SAVE_DIR + "slot_" + str(i) + ".save"
-		if _sl_mode == "save" and FileAccess.file_exists(slot_path):
-			var data := _read_text(slot_path)
-			if data != "":
-				var json := JSON.parse_string(data)
-				if json is Dictionary:
-					var info := Label.new()
-					info.text = "第" + str(i + 1) + "栏\n" + json.get("scene", "")
-					sc.add_child(info)
-		var preview_path := SAVE_DIR + "slot_" + str(i) + ".png"
-		if FileAccess.file_exists(preview_path):
-			var img := Image.new()
-			if img.load(preview_path) == OK:
-				var pr := TextureRect.new()
-				pr.texture = ImageTexture.create_from_image(img)
-				pr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT
-				pr.custom_minimum_size = Vector2(0, 60)
-				sc.add_child(pr)
-		var btn := Button.new()
-		btn.text = "存档" if _sl_mode == "save" else "读档"
-		btn.pressed.connect(_on_slot.bind(i))
-		sc.add_child(btn)
-		_sl_grid.add_child(sc)
-		_sl_slots.push_back(sc)
-	_sl_menu.visible = true
-	get_tree().paused = true
-
-func _close_sl_menu() -> void:
-	_sl_menu.visible = false
-	get_tree().paused = false
-
-func _on_slot(index: int) -> void:
-	var slot_path := SAVE_DIR + "slot_" + str(index) + ".save"
-	if _sl_mode == "save":
-		var data := JSON.stringify({"scene": _scene_name, "idx": _idx, "bg": _bg_path, "bgm": _bgm_path})
-		var f := FileAccess.open(slot_path, FileAccess.WRITE)
-		if f:
-			f.store_string(data)
-			f.close()
-		_close_sl_menu()
-	else:
-		var data := _read_text(slot_path)
-		if data != "":
-			var json := JSON.parse_string(data)
-			if json is Dictionary:
-				_close_sl_menu()
-				start_game()
-				_enter_scene(json.get("scene", start_scene))
-				_idx = json.get("idx", 0)
