@@ -14,6 +14,7 @@ const _DIRS := {
 	"vocal": "vocal",
 	"video": "video",
 	"tex": "tex",
+	"animation": "animation",
 }
 
 var _texture_cache: Dictionary = {}
@@ -85,6 +86,27 @@ func load_texture(file_name: String, type_name: String = "background") -> Textur
 		return tex
 	push_warning("WebGAL Assets: failed to create texture from image: " + p)
 	return null
+
+## 新增：加载 JSON（动画文件）并返回 Dictionary 或空 Dictionary
+func load_json(file_name: String, type_name: String = "animation") -> Dictionary:
+	if file_name == null:
+		return {}
+	var p := resolve(file_name, type_name)
+	if p == "":
+		return {}
+	if not FileAccess.file_exists(p):
+		push_warning("WebGAL Assets: json file not found: " + p)
+		return {}
+	var f := FileAccess.open(p, FileAccess.READ)
+	if f == null:
+		push_warning("WebGAL Assets: cannot open json: " + p)
+		return {}
+	var raw := f.get_as_text()
+	var parsed := JSON.parse_string(raw)
+	if parsed is Dictionary:
+		return parsed
+	push_warning("WebGAL Assets: invalid JSON: " + p)
+	return {}
 
 ## 清理缓存（可按路径或全部）
 func clear_texture_cache(path: String = "") -> void:
